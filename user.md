@@ -3,6 +3,201 @@
 ## Overview
 The User Management System handles authentication, authorization, and user profile management for Students, Landlords, and Admins in the Nest Tanzania Rental Platform.
 
+## System Architecture Diagram
+
+```mermaid
+graph TB
+    %% Client Layer
+    subgraph "Client Applications"
+        WEB[Web App<br/>React/Next.js]
+        MOBILE[Mobile App<br/>React Native]
+    end
+
+    %% API Gateway Layer
+    subgraph "API Gateway"
+        APPSYNC[AWS AppSync<br/>GraphQL API]
+    end
+
+    %% Authentication Layer
+    subgraph "Authentication"
+        COGNITO[AWS Cognito<br/>User Pool]
+        JWT[JWT Tokens]
+    end
+
+    %% Lambda Functions Layer
+    subgraph "Lambda Functions"
+        AUTH_LAMBDA[Auth Handler<br/>graphql-auth.ts]
+        USER_LAMBDA[User Handler<br/>user-operations.ts]
+        LANDLORD_LAMBDA[Landlord Handler<br/>landlord-verification.ts]
+    end
+
+    %% Database Layer
+    subgraph "Database Layer"
+        USERS_TABLE[(users<br/>Materialized View)]
+        EVENTS_TABLE[(user-events<br/>Event Store)]
+        APP_EVENTS[(application-events<br/>Landlord Applications)]
+    end
+
+    %% Storage Layer
+    subgraph "Storage"
+        S3[S3 Bucket<br/>Profile Images]
+        CLOUDFRONT[CloudFront<br/>CDN]
+    end
+
+    %% External Services
+    subgraph "External Services"
+        EMAIL[Email Service<br/>SES/SNS]
+        SMS[SMS Service<br/>SNS]
+    end
+
+    %% Connections
+    WEB --> APPSYNC
+    MOBILE --> APPSYNC
+    
+    APPSYNC --> AUTH_LAMBDA
+    APPSYNC --> USER_LAMBDA
+    APPSYNC --> LANDLORD_LAMBDA
+    
+    AUTH_LAMBDA --> COGNITO
+    AUTH_LAMBDA --> USERS_TABLE
+    AUTH_LAMBDA --> EVENTS_TABLE
+    
+    USER_LAMBDA --> USERS_TABLE
+    USER_LAMBDA --> EVENTS_TABLE
+    USER_LAMBDA --> S3
+    
+    LANDLORD_LAMBDA --> APP_EVENTS
+    LANDLORD_LAMBDA --> EVENTS_TABLE
+    LANDLORD_LAMBDA --> USERS_TABLE
+    
+    COGNITO --> JWT
+    JWT --> APPSYNC
+    
+    S3 --> CLOUDFRONT
+    CLOUDFRONT --> WEB
+    CLOUDFRONT --> MOBILE
+    
+    AUTH_LAMBDA --> EMAIL
+    LANDLORD_LAMBDA --> EMAIL
+    AUTH_LAMBDA --> SMS
+
+    %% Styling
+    classDef client fill:#e1f5fe
+    classDef api fill:#f3e5f5
+    classDef auth fill:#fff3e0
+    classDef lambda fill:#e8f5e8
+    classDef database fill:#fce4ec
+    classDef storage fill:#f1f8e9
+    classDef external fill:#fff8e1
+
+    class WEB,MOBILE client
+    class APPSYNC api
+    class COGNITO,JWT auth
+    class AUTH_LAMBDA,USER_LAMBDA,LANDLORD_LAMBDA lambda
+    class USERS_TABLE,EVENTS_TABLE,APP_EVENTS database
+    class S3,CLOUDFRONT storage
+    class EMAIL,SMS external
+```
+
+## User Flow Diagrams
+
+### Student Registration Flow
+
+```mermaid
+sequenceDiagram
+    participant U as Student
+    participant W as Web App
+    participant A as AppSync
+    participant L as Auth Lambda
+    participant C as Cognito
+    participant D as DynamoDB
+    participant E as Email Service
+
+    U->>W: Fill registration form
+    W->>A: signUp mutation
+    A->>L: Process registration
+    L->>C: Create user account
+    C-->>L: User created
+    L->>D: Store USER_CREATED event
+    L->>D: Materialize user profile
+    L->>E: Send verification email
+    L-->>A: Return tokens & user data
+    A-->>W: Registration response
+    W-->>U: Show verification prompt
+    
+    Note over U,E: Email verification flow
+    U->>W: Enter verification code
+    W->>A: verifyEmail mutation
+    A->>L: Verify code
+    L->>C: Confirm verification
+    L->>D: Store EMAIL_VERIFIED event
+    L->>D: Update user status to ACTIVE
+    L-->>A: Verification success
+    A-->>W: Success response
+    W-->>U: Redirect to dashboard
+```
+
+### Landlord Verification Flow
+
+```mermaid
+sequenceDiagram
+    participant L as Landlord
+    participant W as Web App
+    participant A as AppSync
+    participant LH as Landlord Handler
+    participant D as DynamoDB
+    participant AD as Admin
+    participant E as Email Service
+
+    L->>W: Submit landlord application
+    W->>A: submitLandlordApplication mutation
+    A->>LH: Process application
+    LH->>D: Store application in application-events
+    LH->>D: Store LANDLORD_APPLICATION_SUBMITTED event
+    LH->>D: Update user status to PENDING_LANDLORD_VERIFICATION
+    LH->>E: Notify admin team
+    LH-->>A: Application submitted
+    A-->>W: Success response
+    W-->>L: Show pending status
+
+    Note over AD: Admin reviews application
+    AD->>W: Review application
+    W->>A: approveLandlordApplication mutation
+    A->>LH: Process approval
+    LH->>D: Store LANDLORD_VERIFIED event
+    LH->>D: Update user type to LANDLORD
+    LH->>D: Update status to ACTIVE
+    LH->>E: Send approval email
+    LH-->>A: Approval processed
+    A-->>W: Success response
+    W-->>L: Email notification
+```
+
+### User Profile Update Flow
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant W as Web App
+    participant A as AppSync
+    participant UH as User Handler
+    participant D as DynamoDB
+    participant S3 as S3 Storage
+
+    U->>W: Update profile form
+    alt Profile image upload
+        W->>S3: Upload image
+        S3-->>W: Image URL
+    end
+    W->>A: updateUser mutation
+    A->>UH: Process update
+    UH->>D: Store USER_UPDATED event
+    UH->>D: Update materialized view
+    UH-->>A: Update success
+    A-->>W: Updated user data
+    W-->>U: Show success message
+```
+
 ## Architecture Components
 
 ### AWS Services
@@ -243,29 +438,7 @@ query GetUser($userId: ID!) {
 
 ### Landlord Verification Operations
 
-#### Become Landlord Application
-```graphql
-mutation BecomeLandlord($userId: ID!, $input: BecomeLandlordInput!) {
-  becomeLandlord(userId: $userId, input: $input) {
-    success
-    message
-    applicationId
-    status
-  }
-}
-```
-
-**Input:**
-```typescript
-interface BecomeLandlordInput {
-  businessName: string
-  businessLicense: string
-  taxId: string
-  verificationDocuments: string[]
-}
-```
-
-#### Submit Detailed Landlord Application
+#### Submit Landlord Application
 ```graphql
 mutation SubmitLandlordApplication($input: LandlordApplicationInput!) {
   submitLandlordApplication(input: $input) {
@@ -289,270 +462,3 @@ interface LandlordApplicationInput {
   address: AddressInput
 }
 ```
-
-## Service Layer Implementation
-
-### File Structure
-```
-nest/src/service/handlers/auth/
-├── sign-up.ts
-├── sign-in.ts
-├── verify-email.ts
-├── update-profile.ts
-├── become-landlord.ts
-├── submit-landlord-application.ts
-└── admin-user-management.ts
-```
-
-### Key Service Classes
-
-#### AuthService
-```typescript
-class AuthService {
-  constructor(
-    private cognitoClient: CognitoIdentityProviderClient,
-    private userDAO: UserDAO,
-    private userEventsDAO: UserEventsDAO
-  ) {}
-
-  async signUp(input: SignUpInput): Promise<AuthResponse> {
-    // 1. Validate input
-    // 2. Create Cognito user
-    // 3. Generate USER_CREATED event
-    // 4. Materialize user profile
-    // 5. Return tokens
-  }
-
-  async verifyEmail(email: string, code: string): Promise<SuccessResponse> {
-    // 1. Verify with Cognito
-    // 2. Generate EMAIL_VERIFIED event
-    // 3. Update user status
-  }
-
-  async signIn(email: string, password: string): Promise<AuthResponse> {
-    // 1. Authenticate with Cognito
-    // 2. Get user profile
-    // 3. Update last login
-    // 4. Return tokens and profile
-  }
-}
-```
-
-#### UserProfileService
-```typescript
-class UserProfileService {
-  constructor(
-    private userDAO: UserDAO,
-    private userEventsDAO: UserEventsDAO,
-    private s3Service: S3Service
-  ) {}
-
-  async updateProfile(userId: string, input: UpdateUserInput): Promise<UserProfile> {
-    // 1. Validate permissions
-    // 2. Generate PROFILE_UPDATED event
-    // 3. Materialize changes
-    // 4. Return updated profile
-  }
-
-  async uploadProfileImage(userId: string, fileName: string): Promise<MediaUploadResponse> {
-    // 1. Generate presigned S3 URL
-    // 2. Return upload URL and final image URL
-  }
-}
-```
-
-#### LandlordVerificationService
-```typescript
-class LandlordVerificationService {
-  constructor(
-    private applicationDAO: ApplicationDAO,
-    private userDAO: UserDAO,
-    private notificationService: NotificationService
-  ) {}
-
-  async submitLandlordApplication(input: LandlordApplicationInput): Promise<ApplicationResponse> {
-    // 1. Validate user exists and is TENANT
-    // 2. Create application event
-    // 3. Update user status to PENDING_LANDLORD_VERIFICATION
-    // 4. Notify admins
-    // 5. Return application details
-  }
-
-  async reviewLandlordApplication(
-    applicationId: string, 
-    status: 'APPROVED' | 'REJECTED',
-    adminNotes?: string
-  ): Promise<SuccessResponse> {
-    // 1. Validate admin permissions
-    // 2. Update application status
-    // 3. If approved, upgrade user to LANDLORD
-    // 4. Send notification to applicant
-  }
-}
-```
-
-## Data Access Layer (DAO)
-
-### UserDAO
-```typescript
-class UserDAO extends BaseDAO {
-  async createUser(user: BaseUser): Promise<void> {
-    await this.dynamoClient.putItem({
-      TableName: this.usersTableName,
-      Item: marshall(user)
-    });
-  }
-
-  async getUserById(userId: string): Promise<UserProfile | null> {
-    const result = await this.dynamoClient.getItem({
-      TableName: this.usersTableName,
-      Key: marshall({ userId })
-    });
-    return result.Item ? unmarshall(result.Item) as UserProfile : null;
-  }
-
-  async updateUser(userId: string, updates: Partial<BaseUser>): Promise<void> {
-    // Implementation for atomic updates
-  }
-
-  async getUserByEmail(email: string): Promise<UserProfile | null> {
-    // GSI query by email
-  }
-}
-```
-
-### UserEventsDAO
-```typescript
-class UserEventsDAO extends BaseDAO {
-  async createUserEvent(event: UserEvent): Promise<void> {
-    await this.dynamoClient.putItem({
-      TableName: this.userEventsTableName,
-      Item: marshall({
-        ...event,
-        eventId: generateUUID(),
-        timestamp: new Date().toISOString()
-      })
-    });
-  }
-
-  async getUserEvents(userId: string, limit?: number): Promise<UserEvent[]> {
-    // Query user events by userId
-  }
-}
-```
-
-## Event Sourcing Implementation
-
-### User Events
-```typescript
-enum UserEventType {
-  USER_CREATED = 'USER_CREATED',
-  EMAIL_VERIFIED = 'EMAIL_VERIFIED',
-  PROFILE_UPDATED = 'PROFILE_UPDATED',
-  PASSWORD_CHANGED = 'PASSWORD_CHANGED',
-  ACCOUNT_SUSPENDED = 'ACCOUNT_SUSPENDED',
-  ACCOUNT_ACTIVATED = 'ACCOUNT_ACTIVATED',
-  LANDLORD_APPLICATION_SUBMITTED = 'LANDLORD_APPLICATION_SUBMITTED',
-  LANDLORD_VERIFIED = 'LANDLORD_VERIFIED',
-  PREFERENCES_UPDATED = 'PREFERENCES_UPDATED'
-}
-
-interface UserEvent {
-  eventId: string
-  userId: string
-  eventType: UserEventType
-  eventData: any
-  timestamp: string
-  version: number
-}
-```
-
-### Materialization Service
-```typescript
-class UserMaterializationService {
-  async materializeUserFromEvents(userId: string): Promise<UserProfile> {
-    const events = await this.userEventsDAO.getUserEvents(userId);
-    let user: Partial<UserProfile> = {};
-
-    for (const event of events) {
-      user = this.applyEvent(user, event);
-    }
-
-    return user as UserProfile;
-  }
-
-  private applyEvent(user: Partial<UserProfile>, event: UserEvent): Partial<UserProfile> {
-    switch (event.eventType) {
-      case UserEventType.USER_CREATED:
-        return { ...event.eventData };
-      case UserEventType.PROFILE_UPDATED:
-        return { ...user, ...event.eventData, updatedAt: event.timestamp };
-      case UserEventType.EMAIL_VERIFIED:
-        return { ...user, isEmailVerified: true, accountStatus: 'ACTIVE' };
-      // ... other event handlers
-    }
-  }
-}
-```
-
-## Security & Validation
-
-### Input Validation
-```typescript
-const signUpSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8).regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/),
-  phoneNumber: z.string().regex(/^\+255[67]\d{8}$/), // Tanzania format
-  firstName: z.string().min(2).max(50),
-  lastName: z.string().min(2).max(50)
-});
-```
-
-### Authorization Rules
-- Students can only update their own profiles
-- Landlords can update their profiles and manage their properties
-- Admins can manage all users and moderate content
-- Only verified landlords can create property listings
-
-## Error Handling
-
-### Common Error Types
-```typescript
-enum UserErrorType {
-  USER_NOT_FOUND = 'USER_NOT_FOUND',
-  EMAIL_ALREADY_EXISTS = 'EMAIL_ALREADY_EXISTS',
-  INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
-  EMAIL_NOT_VERIFIED = 'EMAIL_NOT_VERIFIED',
-  ACCOUNT_SUSPENDED = 'ACCOUNT_SUSPENDED',
-  INSUFFICIENT_PERMISSIONS = 'INSUFFICIENT_PERMISSIONS',
-  LANDLORD_VERIFICATION_PENDING = 'LANDLORD_VERIFICATION_PENDING'
-}
-```
-
-## Performance Considerations
-
-### Caching Strategy
-- User profiles cached in memory for 15 minutes
-- Cognito tokens cached until expiry
-- Profile images served via CloudFront CDN
-
-### Database Optimization
-- GSI on email for login lookups
-- GSI on userType for admin queries
-- Pagination for user lists
-- Batch operations for bulk user management
-
-## Monitoring & Logging
-
-### Key Metrics
-- User registration rate
-- Email verification completion rate
-- Login success/failure rates
-- Landlord application approval rate
-- Profile update frequency
-
-### CloudWatch Alarms
-- High authentication failure rate
-- Slow response times (>2s)
-- Error rate >1%
-- Cognito user pool limits approaching
