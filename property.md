@@ -244,8 +244,8 @@ query GetPropertyCards($limit: Int, $nextToken: String) {
 
 #### Get Property Details
 ```graphql
-query GetProperty($propertyId: ID!) {
-  getProperty(propertyId: $propertyId) {
+query GetProperty($propertyId: ID!, $userId: ID) {
+  getProperty(propertyId: $propertyId, userId: $userId) {
     propertyId
     title
     description
@@ -285,9 +285,19 @@ query GetProperty($propertyId: ID!) {
     }
     status
     viewCount
+    isFavorited
   }
 }
 ```
+
+**Implementation Flow:**
+1. Retrieve property details from cache or database
+2. If userId provided, automatically track property view
+3. Store view event in user-activity table
+4. Update user's viewedProperties list
+5. Increment property view count
+6. Check if property is in user's favorites
+7. Return property details with favorite status
 
 #### Location-Based Queries
 ```graphql
@@ -325,19 +335,59 @@ mutation AddToFavorites($userId: ID!, $propertyId: ID!) {
   addToFavorites(userId: $userId, propertyId: $propertyId) {
     success
     message
+    favoriteCount
   }
 }
 ```
 
-#### Track Property View
+#### Remove from Favorites
 ```graphql
-mutation TrackPropertyView($userId: ID!, $propertyId: ID!) {
-  trackPropertyView(userId: $userId, propertyId: $propertyId) {
+mutation RemoveFromFavorites($userId: ID!, $propertyId: ID!) {
+  removeFromFavorites(userId: $userId, propertyId: $propertyId) {
     success
-    viewCount
+    message
+    favoriteCount
   }
 }
 ```
+
+#### Get User Favorites
+```graphql
+query GetUserFavorites($userId: ID!) {
+  getUserFavorites(userId: $userId) {
+    propertyId
+    title
+    monthlyRent
+    district
+    thumbnail
+    available
+    addedAt
+  }
+}
+```
+
+#### Get User Viewed Properties
+```graphql
+query GetUserViewedProperties($userId: ID!) {
+  getUserViewedProperties(userId: $userId) {
+    propertyId
+    title
+    monthlyRent
+    district
+    thumbnail
+    available
+    viewedAt
+  }
+}
+```
+
+**Implementation Flow for Favorites:**
+1. Validate user and property exist
+2. Store favorite event in user-activity table
+3. Update user's favoriteProperties list
+4. Increment property favorite count
+5. Update Redis cache
+6. Return success with updated count
 
 ### Real-time Subscriptions
 
@@ -457,4 +507,38 @@ sequenceDiagram
     SL->>A: Publish subscription
     A->>W2: Real-time update
     W2->>T: Show updated property
+```
+
+### Property View & Favorites Flow
+
+```mermaid
+sequenceDiagram
+    participant T as Tenant
+    participant W as Web App
+    participant A as AppSync
+    participant PL as Property Lambda
+    participant D as DynamoDB
+    participant UA as User Activity Table
+    participant R as Redis Cache
+
+    T->>W: View property details
+    W->>A: getProperty query (with userId)
+    A->>PL: Process request
+    PL->>R: Get property data
+    PL->>UA: Store PROPERTY_VIEWED event
+    PL->>D: Update property view count
+    PL->>UA: Check if favorited
+    PL-->>A: Property details + favorite status
+    A-->>W: Display property
+    W-->>T: Show property with favorite button
+
+    T->>W: Add to favorites
+    W->>A: addToFavorites mutation
+    A->>PL: Process favorite
+    PL->>UA: Store PROPERTY_FAVORITED event
+    PL->>D: Update property favorite count
+    PL->>R: Update cache
+    PL-->>A: Success response
+    A-->>W: Update UI
+    W-->>T: Show favorited state
 ```

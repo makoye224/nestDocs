@@ -34,6 +34,7 @@ graph TB
 ### Database Tables
 - **users** (Materialized View): Current user state
 - **user-events** (Event Store): Immutable user event history
+- **user-activity**: Property views, favorites, and interactions
 - **application-events**: Landlord verification applications
 
 ## Data Models
@@ -86,7 +87,8 @@ interface Tenant extends BaseUser {
     propertyTypes?: PropertyType[]
     amenities?: string[]
   }
-  savedProperties?: string[]
+  viewedProperties?: string[]
+  favoriteProperties?: string[]
   applicationHistory?: string[]
 }
 ```
@@ -112,6 +114,64 @@ interface Admin extends BaseUser {
   adminLevel?: 'SUPER_ADMIN' | 'MODERATOR' | 'SUPPORT'
 }
 ```
+
+## API Operations
+
+### Property Activity Operations
+
+#### Add to Favorites
+```graphql
+mutation AddToFavorites($userId: ID!, $propertyId: ID!) {
+  addToFavorites(userId: $userId, propertyId: $propertyId) {
+    success
+    message
+  }
+}
+```
+
+#### Remove from Favorites
+```graphql
+mutation RemoveFromFavorites($userId: ID!, $propertyId: ID!) {
+  removeFromFavorites(userId: $userId, propertyId: $propertyId) {
+    success
+    message
+  }
+}
+```
+
+#### Get User Favorites
+```graphql
+query GetUserFavorites($userId: ID!) {
+  getUserFavorites(userId: $userId) {
+    propertyId
+    title
+    monthlyRent
+    district
+    thumbnail
+    addedAt
+  }
+}
+```
+
+#### Get User Viewed Properties
+```graphql
+query GetUserViewedProperties($userId: ID!) {
+  getUserViewedProperties(userId: $userId) {
+    propertyId
+    title
+    monthlyRent
+    district
+    thumbnail
+    viewedAt
+  }
+}
+```
+
+**Implementation Flow for Property View:**
+1. User calls `getProperty` query
+2. System automatically tracks view in user-activity table
+3. Updates user's viewedProperties list
+4. Increments property view count
 
 
 
