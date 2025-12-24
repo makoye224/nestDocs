@@ -242,7 +242,7 @@ query GetPropertyCards($limit: Int, $nextToken: String) {
 }
 ```
 
-#### Get Property Details
+#### Get Property Details (with Optional Activity Tracking)
 ```graphql
 query GetProperty($propertyId: ID!, $userId: ID) {
   getProperty(propertyId: $propertyId, userId: $userId) {
@@ -292,12 +292,14 @@ query GetProperty($propertyId: ID!, $userId: ID) {
 
 **Implementation Flow:**
 1. Retrieve property details from cache or database
-2. If userId provided, automatically track property view
-3. Store view event in user-activity table
-4. Update user's viewedProperties list
-5. Increment property view count
-6. Check if property is in user's favorites
-7. Return property details with favorite status
+2. **If userId provided, automatically track property view:**
+   - Store view event in user-activity table
+   - Update user's viewedProperties list
+   - Increment property view count
+   - Check if property is in user's favorites
+3. Return property details with favorite status
+
+**Key Enhancement:** The optional `userId` parameter enables seamless activity tracking without requiring a separate mutation. When present, the query automatically records the property view, eliminating the need for clients to make additional API calls for user activity tracking.
 
 #### Location-Based Queries
 ```graphql
@@ -327,7 +329,19 @@ query GetNearbyProperties($lat: Float!, $lng: Float!, $radiusKm: Float) {
 }
 ```
 
-### Property Favorites & Activity
+### User Activity Tracking
+
+#### Track Property View (Alternative Approach)
+```graphql
+mutation TrackPropertyView($userId: ID!, $propertyId: ID!) {
+  trackPropertyView(userId: $userId, propertyId: $propertyId) {
+    success
+    viewCount
+  }
+}
+```
+
+**Note:** While this dedicated mutation is available, the recommended approach is to use the optional `userId` parameter in the `getProperty` query for automatic activity tracking. This reduces API calls and provides a better user experience.
 
 #### Add to Favorites
 ```graphql
