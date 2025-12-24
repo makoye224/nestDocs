@@ -3,6 +3,27 @@
 ## Overview
 The Property Management System handles property listings, search, discovery, favorites, and media management for the Nest Tanzania Rental Platform.
 
+## System Architecture Diagram
+
+```mermaid
+graph TB
+    CLIENT[Client Apps<br/>Web & Mobile] --> APPSYNC[AppSync<br/>GraphQL API + Subscriptions]
+    APPSYNC --> PROPERTY_LAMBDA[Property Lambda<br/>All Property Operations]
+    APPSYNC --> STREAM_LAMBDA[Stream Lambda<br/>Real-time Updates]
+    
+    PROPERTY_LAMBDA --> DB[(DynamoDB<br/>Properties & Events)]
+    STREAM_LAMBDA --> DB
+    
+    PROPERTY_LAMBDA --> REDIS[(Redis Cache<br/>Property Data)]
+    STREAM_LAMBDA --> REDIS
+    
+    PROPERTY_LAMBDA --> S3[S3<br/>Property Media]
+    
+    DB --> STREAMS[DynamoDB Streams]
+    STREAMS --> STREAM_LAMBDA
+    STREAM_LAMBDA --> APPSYNC
+```
+
 ## Architecture Components
 
 ### AWS Services
@@ -10,13 +31,15 @@ The Property Management System handles property listings, search, discovery, fav
 - **AWS Lambda**: Business logic processing
 - **DynamoDB**: Data persistence with event sourcing
 - **DynamoDB Streams**: Real-time change notifications
+- **Redis Cache**: High-performance property data caching
 - **S3 + CloudFront**: Media storage and delivery
 - **OpenSearch**: Advanced search capabilities (future enhancement)
 
 ### Lambda Functions
 - **PropertyFunction**: `nest/src/handlers/graphql-property.ts`
+  - Handles: CRUD operations, search, favorites, views, Redis caching
 - **PropertyStreamFunction**: `nest/src/handlers/property-stream.ts`
-- **PropertyJsonFunction**: `nest/src/handlers/property-json-generator.ts`
+  - Handles: Real-time subscription events from DynamoDB Streams, cache invalidation
 
 ### Database Tables
 - **properties** (Materialized View): Current property state
@@ -169,7 +192,7 @@ interface CreatePropertyInput {
 2. Validate input data and location
 3. Generate property event: `PROPERTY_CREATED`
 4. Materialize property in properties table
-5. Trigger property JSON regeneration
+5. Cache property data in Redis
 6. Publish subscription event
 7. Return property details
 
@@ -190,19 +213,10 @@ mutation UpdateProperty($propertyId: ID!, $landlordId: ID!, $input: UpdateProper
 2. Compare changes with current state
 3. Generate property events for each change
 4. Materialize updates
-5. Publish subscription events
-6. Update search index (if applicable)
+5. Update Redis cache
+6. Publish subscription events
+7. Update search index (if applicable)
 
-#### Update Property Status
-```graphql
-mutation UpdatePropertyStatus($propertyId: ID!, $landlordId: ID!, $status: PropertyStatus!) {
-  updatePropertyStatus(propertyId: $propertyId, landlordId: $landlordId, status: $status) {
-    propertyId
-    status
-    updatedAt
-  }
-}
-```
 
 ### Property Discovery & Search
 
@@ -224,50 +238,6 @@ query GetPropertyCards($limit: Int, $nextToken: String) {
     }
     nextToken
     count
-  }
-}
-```
-
-#### Advanced Property Search
-```graphql
-query SearchProperties(
-  $region: String
-  $district: String
-  $minPrice: Float
-  $maxPrice: Float
-  $propertyType: PropertyType
-  $bedrooms: Int
-  $limit: Int
-  $from: Int
-  $q: String
-) {
-  searchProperties(
-    region: $region
-    district: $district
-    minPrice: $minPrice
-    maxPrice: $maxPrice
-    propertyType: $propertyType
-    bedrooms: $bedrooms
-    limit: $limit
-    from: $from
-    q: $q
-  ) {
-    properties {
-      propertyId
-      title
-      monthlyRent
-      propertyType
-      bedrooms
-      district
-      region
-      thumbnail
-      available
-    }
-    count
-    total
-    from
-    size
-    nextToken
   }
 }
 ```
@@ -407,538 +377,84 @@ subscription OnNewPropertyInRegion($region: String!) {
 }
 ```
 
-## Service Layer Implementation
+## Property Flow Diagrams
 
-### File Structure
-```
-nest/src/service/handlers/property/
-├── CreatePropertyService.ts
-├── UpdatePropertyService.ts
-├── PropertySearchService.ts
-├── PropertyViewService.ts
-├── PropertyFavoritesService.ts
-├── PropertyMediaService.ts
-├── PropertyJsonService.ts
-└── PropertySubscriptionService.ts
-```
+### Property Creation Flow
 
-### Key Service Classes
+```mermaid
+sequenceDiagram
+    participant L as Landlord
+    participant W as Web App
+    participant A as AppSync
+    participant PL as Property Lambda
+    participant D as DynamoDB
+    participant R as Redis Cache
+    participant S3 as S3 Storage
 
-#### CreatePropertyService
-```typescript
-class CreatePropertyService {
-  constructor(
-    private propertyDAO: PropertyDAO,
-    private propertyEventsDAO: PropertyEventsDAO,
-    private locationDAO: LocationDAO,
-    private subscriptionService: PropertySubscriptionService
-  ) {}
-
-  async createProperty(landlordId: string, input: CreatePropertyInput): Promise<Property> {
-    // 1. Validate landlord is verified
-    // 2. Validate location exists
-    // 3. Validate input data
-    // 4. Generate propertyId
-    // 5. Create PROPERTY_CREATED event
-    // 6. Materialize property
-    // 7. Publish subscription event
-    // 8. Return property
-  }
-
-  private async validateLocation(address: AddressInput): Promise<boolean> {
-    // Verify region, district, ward, street exist in location hierarchy
-  }
-}
+    L->>W: Create property form
+    W->>S3: Upload property images
+    S3-->>W: Image URLs
+    W->>A: createProperty mutation
+    A->>PL: Process creation
+    PL->>D: Store PROPERTY_CREATED event
+    PL->>D: Materialize property
+    PL->>R: Cache property data
+    PL-->>A: Property created
+    A-->>W: Success response
+    W-->>L: Show property listing
 ```
 
-#### PropertySearchService
-```typescript
-class PropertySearchService {
-  constructor(
-    private propertyDAO: PropertyDAO,
-    private userActivityDAO: UserActivityDAO
-  ) {}
+### Property Search Flow
 
-  async searchProperties(filters: PropertySearchFilters): Promise<PropertySearchResponse> {
-    // 1. Build DynamoDB query with filters
-    // 2. Apply pagination
-    // 3. Execute query
-    // 4. Transform to PropertyCard format
-    // 5. Return paginated results
-  }
+```mermaid
+sequenceDiagram
+    participant T as Tenant
+    participant W as Web App
+    participant A as AppSync
+    participant PL as Property Lambda
+    participant R as Redis Cache
+    participant D as DynamoDB
 
-  async getPropertiesByLocation(region: string, district: string): Promise<Property[]> {
-    // GSI query by location
-  }
-
-  async getNearbyProperties(lat: number, lng: number, radiusKm: number): Promise<Property[]> {
-    // Geospatial query implementation
-  }
-}
+    T->>W: Search properties
+    W->>A: searchProperties query
+    A->>PL: Process search
+    alt Fast loading from cache
+        PL->>R: Get cached results
+        R-->>PL: Property data
+    else Cache miss
+        PL->>D: Query properties table
+        D-->>PL: Property data
+        PL->>R: Cache results
+    end
+    PL-->>A: Search results
+    A-->>W: Property cards
+    W-->>T: Display results
 ```
 
-#### PropertyViewService
-```typescript
-class PropertyViewService {
-  constructor(
-    private userActivityDAO: UserActivityDAO,
-    private propertyDAO: PropertyDAO
-  ) {}
+### Real-time Property Updates Flow
 
-  async trackPropertyView(userId: string, propertyId: string): Promise<void> {
-    // 1. Record view in user-activity table
-    // 2. Increment property view count
-    // 3. Update user's recently viewed list
-  }
+```mermaid
+sequenceDiagram
+    participant L as Landlord
+    participant W1 as Landlord App
+    participant A as AppSync
+    participant PL as Property Lambda
+    participant D as DynamoDB
+    participant DS as DynamoDB Streams
+    participant SL as Stream Lambda
+    participant R as Redis Cache
+    participant W2 as Tenant App
+    participant T as Tenant
 
-  async getRecentlyViewed(userId: string, limit: number = 10): Promise<PropertyCard[]> {
-    // Get user's recent property views
-  }
-}
+    L->>W1: Update property
+    W1->>A: updateProperty mutation
+    A->>PL: Process update
+    PL->>D: Store PROPERTY_UPDATED event
+    PL->>R: Update cache
+    D->>DS: Stream change event
+    DS->>SL: Trigger stream handler
+    SL->>R: Invalidate related cache
+    SL->>A: Publish subscription
+    A->>W2: Real-time update
+    W2->>T: Show updated property
 ```
-
-#### PropertyFavoritesService
-```typescript
-class PropertyFavoritesService {
-  constructor(
-    private userActivityDAO: UserActivityDAO,
-    private propertyDAO: PropertyDAO
-  ) {}
-
-  async addToFavorites(userId: string, propertyId: string): Promise<void> {
-    // 1. Add to user's favorites list
-    // 2. Increment property favorite count
-    // 3. Create activity record
-  }
-
-  async removeFromFavorites(userId: string, propertyId: string): Promise<void> {
-    // 1. Remove from user's favorites
-    // 2. Decrement property favorite count
-  }
-
-  async getFavoriteProperties(userId: string): Promise<PropertyCard[]> {
-    // Get user's favorite properties
-  }
-}
-```
-
-#### PropertyMediaService
-```typescript
-class PropertyMediaService {
-  constructor(
-    private s3Service: S3Service,
-    private mediaDAO: MediaDAO,
-    private propertyDAO: PropertyDAO
-  ) {}
-
-  async getMediaUploadUrl(
-    userId: string, 
-    fileName: string, 
-    contentType: string
-  ): Promise<MediaUploadResponse> {
-    // 1. Generate S3 presigned URL
-    // 2. Create media record
-    // 3. Return upload URL and final file URL
-  }
-
-  async associateMediaWithProperty(
-    propertyId: string, 
-    landlordId: string, 
-    media: PropertyMediaInput
-  ): Promise<Property> {
-    // 1. Validate ownership
-    // 2. Update property media
-    // 3. Generate MEDIA_UPDATED event
-    // 4. Return updated property
-  }
-
-  async generateThumbnail(imageUrl: string): Promise<string> {
-    // Generate optimized thumbnail for property cards
-  }
-}
-```
-
-## Data Access Layer (DAO)
-
-### PropertyDAO
-```typescript
-class PropertyDAO extends BaseDAO {
-  async createProperty(property: Property): Promise<void> {
-    await this.dynamoClient.putItem({
-      TableName: this.propertiesTableName,
-      Item: marshall(property),
-      ConditionExpression: 'attribute_not_exists(propertyId)'
-    });
-  }
-
-  async getPropertyById(propertyId: string): Promise<Property | null> {
-    const result = await this.dynamoClient.getItem({
-      TableName: this.propertiesTableName,
-      Key: marshall({ propertyId })
-    });
-    return result.Item ? unmarshall(result.Item) as Property : null;
-  }
-
-  async getPropertiesByLandlord(
-    landlordId: string, 
-    limit?: number, 
-    nextToken?: string
-  ): Promise<PropertyListResponse> {
-    // GSI query by landlordId with pagination
-  }
-
-  async searchProperties(filters: PropertySearchFilters): Promise<PropertySearchResponse> {
-    // Complex query with multiple filters
-    // Consider using FilterExpression for non-key attributes
-  }
-
-  async getPropertiesByLocation(region: string, district: string): Promise<Property[]> {
-    // GSI query by location
-  }
-
-  async updateProperty(propertyId: string, updates: Partial<Property>): Promise<void> {
-    // Atomic update with version checking
-  }
-
-  async incrementViewCount(propertyId: string): Promise<number> {
-    const result = await this.dynamoClient.updateItem({
-      TableName: this.propertiesTableName,
-      Key: marshall({ propertyId }),
-      UpdateExpression: 'ADD viewCount :inc',
-      ExpressionAttributeValues: marshall({ ':inc': 1 }),
-      ReturnValues: 'UPDATED_NEW'
-    });
-    return unmarshall(result.Attributes!).viewCount;
-  }
-}
-```
-
-### PropertyEventsDAO
-```typescript
-class PropertyEventsDAO extends BaseDAO {
-  async createPropertyEvent(event: PropertyEvent): Promise<void> {
-    await this.dynamoClient.putItem({
-      TableName: this.propertyEventsTableName,
-      Item: marshall({
-        ...event,
-        eventId: generateUUID(),
-        timestamp: new Date().toISOString()
-      })
-    });
-  }
-
-  async getPropertyEvents(propertyId: string): Promise<PropertyEvent[]> {
-    // Query all events for a property
-  }
-
-  async getPropertyEventsByType(
-    propertyId: string, 
-    eventType: PropertyEventType
-  ): Promise<PropertyEvent[]> {
-    // Query events by type
-  }
-}
-```
-
-### UserActivityDAO
-```typescript
-class UserActivityDAO extends BaseDAO {
-  async recordPropertyView(userId: string, propertyId: string): Promise<void> {
-    await this.dynamoClient.putItem({
-      TableName: this.userActivityTableName,
-      Item: marshall({
-        userId,
-        activityType: 'PROPERTY_VIEW',
-        propertyId,
-        timestamp: new Date().toISOString(),
-        ttl: Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60) // 90 days TTL
-      })
-    });
-  }
-
-  async addToFavorites(userId: string, propertyId: string): Promise<void> {
-    await this.dynamoClient.putItem({
-      TableName: this.userActivityTableName,
-      Item: marshall({
-        userId,
-        activityType: 'FAVORITE_ADDED',
-        propertyId,
-        timestamp: new Date().toISOString()
-      }),
-      ConditionExpression: 'attribute_not_exists(userId) AND attribute_not_exists(propertyId)'
-    });
-  }
-
-  async getFavoriteProperties(userId: string): Promise<string[]> {
-    // Query user's favorite properties
-  }
-
-  async getRecentlyViewed(userId: string, limit: number): Promise<string[]> {
-    // Query recent property views with limit
-  }
-}
-```
-
-## Event Sourcing Implementation
-
-### Property Events
-```typescript
-enum PropertyEventType {
-  PROPERTY_CREATED = 'PROPERTY_CREATED',
-  PROPERTY_UPDATED = 'PROPERTY_UPDATED',
-  PRICE_CHANGED = 'PRICE_CHANGED',
-  STATUS_CHANGED = 'STATUS_CHANGED',
-  AVAILABILITY_CHANGED = 'AVAILABILITY_CHANGED',
-  MEDIA_UPDATED = 'MEDIA_UPDATED',
-  DESCRIPTION_UPDATED = 'DESCRIPTION_UPDATED',
-  PROPERTY_DELETED = 'PROPERTY_DELETED'
-}
-
-interface PropertyEvent {
-  eventId: string
-  propertyId: string
-  landlordId: string
-  eventType: PropertyEventType
-  eventData: any
-  changes?: PropertyChange[]
-  timestamp: string
-  version: number
-}
-
-interface PropertyChange {
-  field: string
-  oldValue?: string
-  newValue: string
-}
-```
-
-### Property Stream Handler
-```typescript
-// nest/src/handlers/property-stream.ts
-export const propertyStreamHandler = async (event: DynamoDBStreamEvent): Promise<void> => {
-  for (const record of event.Records) {
-    if (record.eventName === 'MODIFY') {
-      const newImage = record.dynamodb?.NewImage;
-      const oldImage = record.dynamodb?.OldImage;
-      
-      if (newImage && oldImage) {
-        const changes = detectChanges(oldImage, newImage);
-        await publishPropertyUpdateEvent(newImage.propertyId.S!, changes);
-      }
-    } else if (record.eventName === 'INSERT') {
-      const newImage = record.dynamodb?.NewImage;
-      if (newImage) {
-        await publishNewPropertyEvent(newImage);
-      }
-    }
-  }
-};
-```
-
-## Real-time Subscriptions Implementation
-
-### Subscription Publishing
-```typescript
-class PropertySubscriptionService {
-  constructor(private appSyncClient: AppSyncClient) {}
-
-  async publishNewPropertyEvent(propertyId: string, region: string): Promise<void> {
-    const mutation = `
-      mutation PublishNewPropertyEvent($propertyId: ID!, $region: String!) {
-        publishNewPropertyEvent(propertyId: $propertyId, region: $region) {
-          success
-          message
-        }
-      }
-    `;
-
-    await this.appSyncClient.graphql({
-      query: mutation,
-      variables: { propertyId, region }
-    });
-  }
-
-  async publishPropertyUpdateEvent(input: PropertyUpdateEventInput): Promise<void> {
-    const mutation = `
-      mutation PublishPropertyUpdateEvent($input: PropertyUpdateEventInput!) {
-        publishPropertyUpdateEvent(input: $input) {
-          propertyId
-          eventType
-          changes {
-            field
-            oldValue
-            newValue
-          }
-          timestamp
-        }
-      }
-    `;
-
-    await this.appSyncClient.graphql({
-      query: mutation,
-      variables: { input }
-    });
-  }
-}
-```
-
-## Performance Optimizations
-
-### Database Indexes
-```typescript
-// Global Secondary Indexes
-const propertyIndexes = {
-  // For landlord property listings
-  'landlordId-createdAt-index': {
-    partitionKey: 'landlordId',
-    sortKey: 'createdAt'
-  },
-  
-  // For location-based searches
-  'region-district-index': {
-    partitionKey: 'region',
-    sortKey: 'district'
-  },
-  
-  // For price-based searches
-  'propertyType-monthlyRent-index': {
-    partitionKey: 'propertyType',
-    sortKey: 'monthlyRent'
-  },
-  
-  // For status filtering
-  'status-updatedAt-index': {
-    partitionKey: 'status',
-    sortKey: 'updatedAt'
-  }
-};
-```
-
-### Caching Strategy
-- Property cards cached for 5 minutes
-- Property details cached for 15 minutes
-- Search results cached for 2 minutes
-- Media URLs cached via CloudFront CDN
-
-### Property JSON Generation
-```typescript
-// Daily batch job to generate optimized property JSON
-class PropertyJsonService {
-  async generatePropertyJson(): Promise<void> {
-    // 1. Query all active properties
-    // 2. Transform to optimized format
-    // 3. Upload to S3
-    // 4. Invalidate CloudFront cache
-  }
-}
-```
-
-## Search Implementation
-
-### Basic Search (DynamoDB)
-```typescript
-class BasicPropertySearch {
-  async searchByFilters(filters: PropertySearchFilters): Promise<Property[]> {
-    let query = this.dynamoClient.scan({
-      TableName: this.propertiesTableName,
-      FilterExpression: 'attribute_exists(propertyId)'
-    });
-
-    // Add filters
-    if (filters.region) {
-      query.FilterExpression += ' AND #region = :region';
-      query.ExpressionAttributeNames = { '#region': 'region' };
-      query.ExpressionAttributeValues = { ':region': { S: filters.region } };
-    }
-
-    // Execute query with pagination
-    return this.executePaginatedQuery(query, filters.limit, filters.nextToken);
-  }
-}
-```
-
-### Advanced Search (Future: OpenSearch)
-```typescript
-class AdvancedPropertySearch {
-  async searchProperties(query: string, filters: PropertySearchFilters): Promise<Property[]> {
-    const searchQuery = {
-      index: 'properties',
-      body: {
-        query: {
-          bool: {
-            must: [
-              {
-                multi_match: {
-                  query: query,
-                  fields: ['title^2', 'description', 'amenities']
-                }
-              }
-            ],
-            filter: this.buildFilters(filters)
-          }
-        },
-        sort: [
-          { _score: { order: 'desc' } },
-          { monthlyRent: { order: 'asc' } }
-        ]
-      }
-    };
-
-    return this.openSearchClient.search(searchQuery);
-  }
-}
-```
-
-## Error Handling & Validation
-
-### Input Validation
-```typescript
-const createPropertySchema = z.object({
-  title: z.string().min(10).max(200),
-  description: z.string().min(50).max(2000),
-  address: z.object({
-    street: z.string().min(5),
-    ward: z.string().min(2),
-    district: z.string().min(2),
-    region: z.string().min(2)
-  }),
-  pricing: z.object({
-    monthlyRent: z.number().positive(),
-    deposit: z.number().nonnegative(),
-    currency: z.enum(['TZS', 'USD'])
-  }),
-  specifications: z.object({
-    squareMeters: z.number().positive(),
-    bedrooms: z.number().int().nonnegative().optional(),
-    bathrooms: z.number().int().nonnegative().optional()
-  })
-});
-```
-
-### Error Types
-```typescript
-enum PropertyErrorType {
-  PROPERTY_NOT_FOUND = 'PROPERTY_NOT_FOUND',
-  UNAUTHORIZED_ACCESS = 'UNAUTHORIZED_ACCESS',
-  INVALID_LOCATION = 'INVALID_LOCATION',
-  PROPERTY_ALREADY_RENTED = 'PROPERTY_ALREADY_RENTED',
-  MEDIA_UPLOAD_FAILED = 'MEDIA_UPLOAD_FAILED',
-  SEARCH_LIMIT_EXCEEDED = 'SEARCH_LIMIT_EXCEEDED'
-}
-```
-
-## Monitoring & Analytics
-
-### Key Metrics
-- Property creation rate
-- Search query performance
-- Property view counts
-- Favorite conversion rates
-- Media upload success rates
-- Subscription event delivery rates
-
-### CloudWatch Dashboards
-- Property listing trends
-- Search performance metrics
-- Real-time subscription activity
-- Media storage usage
