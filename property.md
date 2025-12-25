@@ -331,37 +331,23 @@ query GetNearbyProperties($lat: Float!, $lng: Float!, $radiusKm: Float) {
 
 ### User Activity Tracking
 
-#### Track Property View (Alternative Approach)
+#### Manage Property Favorites 
 ```graphql
-mutation TrackPropertyView($userId: ID!, $propertyId: ID!) {
-  trackPropertyView(userId: $userId, propertyId: $propertyId) {
+mutation ManagePropertyFavorite($userId: ID!, $propertyId: ID!, $action: FavoriteAction!) {
+  managePropertyFavorite(userId: $userId, propertyId: $propertyId, action: $action) {
     success
-    viewCount
+    message
+    favoriteCount
+    isFavorited
   }
 }
 ```
 
-**Note:** While this dedicated mutation is available, the recommended approach is to use the optional `userId` parameter in the `getProperty` query for automatic activity tracking. This reduces API calls and provides a better user experience.
-
-#### Add to Favorites
-```graphql
-mutation AddToFavorites($userId: ID!, $propertyId: ID!) {
-  addToFavorites(userId: $userId, propertyId: $propertyId) {
-    success
-    message
-    favoriteCount
-  }
-}
-```
-
-#### Remove from Favorites
-```graphql
-mutation RemoveFromFavorites($userId: ID!, $propertyId: ID!) {
-  removeFromFavorites(userId: $userId, propertyId: $propertyId) {
-    success
-    message
-    favoriteCount
-  }
+**Enum:**
+```typescript
+enum FavoriteAction {
+  ADD = 'ADD'
+  REMOVE = 'REMOVE'
 }
 ```
 
@@ -397,11 +383,13 @@ query GetUserViewedProperties($userId: ID!) {
 
 **Implementation Flow for Favorites:**
 1. Validate user and property exist
-2. Store favorite event in user-activity table
-3. Update user's favoriteProperties list
-4. Increment property favorite count
-5. Update Redis cache
-6. Return success with updated count
+2. Check current favorite status
+3. Based on action flag (ADD/REMOVE):
+   - Store appropriate event in user-activity table (PROPERTY_FAVORITED/PROPERTY_UNFAVORITED)
+   - Update user's favoriteProperties list
+   - Increment/decrement property favorite count
+4. Update Redis cache
+5. Return success with updated count and current favorite status
 
 ### Real-time Subscriptions
 
@@ -546,13 +534,13 @@ sequenceDiagram
     A-->>W: Display property
     W-->>T: Show property with favorite button
 
-    T->>W: Add to favorites
-    W->>A: addToFavorites mutation
-    A->>PL: Process favorite
-    PL->>UA: Store PROPERTY_FAVORITED event
+    T->>W: Toggle favorites
+    W->>A: managePropertyFavorite mutation (ADD/REMOVE)
+    A->>PL: Process favorite action
+    PL->>UA: Store PROPERTY_FAVORITED/UNFAVORITED event
     PL->>D: Update property favorite count
     PL->>R: Update cache
     PL-->>A: Success response
     A-->>W: Update UI
-    W-->>T: Show favorited state
+    W-->>T: Show updated favorite state
 ```
