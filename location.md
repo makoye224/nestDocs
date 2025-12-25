@@ -59,10 +59,10 @@ The CSV import system uses a simple 3-column format: `type`, `name`, and `parent
 
 | Type | Name | Parent |
 |------|------|--------|
-| REGION | Dar es Salaam | |
-| REGION | Arusha | |
-| REGION | Dodoma | |
-| REGION | Mwanza | |
+| REGION | Dar es Salaam | Tanzania |
+| REGION | Arusha | Tanzania |
+| REGION | Dodoma | Tanzania |
+| REGION | Mwanza | Tanzania |
 | DISTRICT | Ilala | Dar es Salaam |
 | DISTRICT | Kinondoni | Dar es Salaam |
 | DISTRICT | Temeke | Dar es Salaam |
