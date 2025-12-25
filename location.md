@@ -7,22 +7,22 @@ The Location Management System provides hierarchical location data (Region → D
 
 ```mermaid
 graph TB
-    CLIENT[Client Apps<br/>Web & Mobile] --> APPSYNC[AppSync<br/>GraphQL API]
+    CLIENT[Client Apps<br/>Web & Mobile<br/>📱 JSON Only] --> CDN[CloudFront CDN<br/>locations.json]
+    CDN --> S3[S3 Bucket<br/>Location JSON Cache]
+    
+    ADMIN[Admin Panel<br/>🔧 GraphQL API] --> APPSYNC[AppSync<br/>GraphQL API]
     APPSYNC --> LOCATION_LAMBDA[Location Lambda<br/>CRUD & CSV Import]
-    APPSYNC --> BATCH_LAMBDA[Batch Job Lambda<br/>CSV Processing]
     
     LOCATION_LAMBDA --> DB[(DynamoDB<br/>Locations & Events)]
-    BATCH_LAMBDA --> DB
+    LOCATION_LAMBDA --> S3
     
-    LOCATION_LAMBDA --> S3[S3<br/>Location JSON Cache]
-    BATCH_LAMBDA --> S3
-    
-    S3 --> CDN[CloudFront<br/>Fast Global Access]
-    CDN --> CLIENT
-    
-    ADMIN[Admin Panel] --> CSV_UPLOAD[CSV Upload]
-    CSV_UPLOAD --> BATCH_LAMBDA
+    CSV_UPLOAD[CSV Upload] --> APPSYNC
 ```
+
+**Key Architecture Points:**
+- **Client Apps**: Access location data ONLY via pre-generated JSON from CloudFront CDN
+- **Admin Panel**: Uses GraphQL API for location management operations
+- **No Direct Database Access**: Clients never query DynamoDB or Lambda functions directly
 
 ## Location Hierarchy Structure
 
@@ -126,16 +126,26 @@ sequenceDiagram
 
 ## Architecture Components
 
+### Client Access Pattern
+- **Client Apps (Web & Mobile)**: Access location data ONLY via pre-generated JSON file from CloudFront CDN
+- **No GraphQL Queries**: Clients never make direct GraphQL calls for location data
+- **Static JSON Cache**: Fast, globally distributed location hierarchy via CDN
+
+### Admin Access Pattern
+- **Admin Panel**: Uses GraphQL API for location management (CRUD operations, CSV imports)
+- **CSV Import**: Bulk location data import through GraphQL mutations
+- **Cache Regeneration**: Triggers JSON file regeneration after data changes
+
 ### AWS Services
-- **AWS AppSync**: GraphQL API for location queries and mutations
-- **AWS Lambda**: Location data processing, CSV imports, and cache management
+- **CloudFront CDN**: Global distribution of location JSON file for client apps
+- **S3**: Static hosting of optimized location JSON cache
+- **AWS AppSync**: GraphQL API for admin operations only
+- **AWS Lambda**: Location data processing, CSV imports, and JSON generation
 - **DynamoDB**: Hierarchical location storage with event sourcing pattern
-- **S3**: Location JSON cache for fast client access
-- **CloudFront**: Global CDN for location data distribution
 
 ### Lambda Functions
-- **LocationFunction**: `nest/src/handlers/graphql-location.ts` - CRUD operations and queries
-- **BatchJobFunction**: `nest/src/handlers/batch-job.ts` - CSV import processing
+- **LocationFunction**: `nest/src/handlers/graphql-location.ts` - Admin CRUD operations and JSON generation
+- **LocationJsonService**: Generates optimized JSON file for client consumption
 
 ### Database Tables
 - **locations** (Materialized View): Current location hierarchy state
@@ -183,72 +193,62 @@ interface Coordinates {
 }
 ```
 
-### Location Tree Structure (Client Cache)
+## Client Location Access
+
+### Location JSON Structure (Client Consumption)
 ```typescript
-interface LocationTree {
-  regions: Region[]
-  districts: { [regionId: string]: District[] }
-  wards: { [districtId: string]: Ward[] }
-  streets: { [wardId: string]: Street[] }
-}
-```
-
-## API Operations
-
-### Location Hierarchy Queries
-
-#### Get All Regions
-```graphql
-query GetRegions {
-  getRegions {
-    id
-    name
-    code
-    population
-  }
-}
-```
-
-#### Get Districts by Region
-```graphql
-query GetDistricts($regionId: ID!) {
-  getDistricts(regionId: $regionId) {
-    id
-    name
-    regionId
-    code
-    population
-  }
-}
-```
-
-#### Get Wards by District
-```graphql
-query GetWards($districtId: ID!) {
-  getWards(districtId: $districtId) {
-    id
-    name
-    districtId
-    code
-  }
-}
-```
-
-#### Get Streets by Ward
-```graphql
-query GetStreets($wardId: ID!) {
-  getStreets(wardId: $wardId) {
-    id
-    name
-    wardId
-    postalCode
-    coordinates {
-      latitude
-      longitude
+interface LocationsJSON {
+  regions: {
+    [regionId: string]: {
+      id: string
+      name: string
+      districts: {
+        [districtId: string]: {
+          id: string
+          name: string
+          wards: {
+            [wardId: string]: {
+              id: string
+              name: string
+              streets: {
+                [streetId: string]: {
+                  id: string
+                  name: string
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
+  lastUpdated: string
+  version: number
 }
 ```
+
+### Client Usage Pattern
+```typescript
+// Client apps fetch location data once on app initialization
+const locationsResponse = await fetch('https://cdn.nest.co.tz/locations.json');
+const locations: LocationsJSON = await locationsResponse.json();
+
+// Use cached data for all location operations
+const regions = Object.values(locations.regions);
+const districts = Object.values(locations.regions[regionId].districts);
+const wards = Object.values(locations.regions[regionId].districts[districtId].wards);
+```
+
+### Benefits of JSON-Only Client Access
+- **Ultra-fast loading**: Single HTTP request vs multiple GraphQL queries
+- **Offline capability**: JSON can be cached locally for offline use
+- **Reduced server load**: No database queries for client location requests
+- **Global performance**: CloudFront CDN ensures fast access worldwide
+- **Simple client code**: No GraphQL client setup required
+
+## Admin API Operations (GraphQL)
+
+**Note**: These GraphQL operations are for admin use only. Client apps do not use these APIs.
 
 ### Location Management Operations
 
@@ -316,9 +316,7 @@ mutation UpdateLocation($locationId: ID!, $input: UpdateLocationInput!) {
 }
 ```
 
-### Location Cache Management
-
-#### Regenerate Location JSON Cache
+#### Regenerate Location JSON Cache (Critical Operation)
 ```graphql
 mutation RegenerateLocationJson {
   regenerateLocationJson {
@@ -330,4 +328,17 @@ mutation RegenerateLocationJson {
 }
 ```
 
-**Purpose:** Generates optimized JSON file containing complete location hierarchy for fast client-side access via CDN.
+**Purpose**: Generates optimized JSON file containing complete location hierarchy for client consumption via CDN.
+
+**When to Use**:
+- After CSV imports
+- After manual location updates
+- When location data becomes inconsistent
+- Scheduled maintenance updates
+
+**Process**:
+1. Query all locations from DynamoDB
+2. Build hierarchical JSON structure
+3. Upload to S3 with public read access
+4. Invalidate CloudFront cache
+5. Return CDN URL for verification
